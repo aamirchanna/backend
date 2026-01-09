@@ -9,12 +9,24 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// PostgreSQL pool with timeout (better Railway stability)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 20000
 });
 
-const JWT_SECRET = 'your_university_project_secret_key';
+// JWT secret from .env
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// --- ROOT ROUTE ---
+app.get('/', (req, res) => {
+  res.json({
+    message: '📚 Library Backend Running 🚀',
+    status: 'OK'
+  });
+});
 
 // --- AUTH MIDDLEWARE ---
 const authenticateToken = (req, res, next) => {
@@ -31,7 +43,6 @@ const authenticateToken = (req, res, next) => {
 };
 
 // --- AUTH ENDPOINTS ---
-
 app.post('/api/auth/register', async (req, res) => {
   const { email, password, user_type } = req.body;
   
@@ -47,7 +58,10 @@ app.post('/api/auth/register', async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'User already exists or database error' });
+    if (err.code === '23505') { // Duplicate email
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -73,6 +87,11 @@ app.put('/api/auth/profile/:id', authenticateToken, async (req, res) => {
     const { password } = req.body;
     if (req.user.id != id) return res.status(403).json({ error: 'Unauthorized' });
 
+    // Password validation
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be 6+ chars' });
+    }
+
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
         await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [hashedPassword, id]);
@@ -83,7 +102,6 @@ app.put('/api/auth/profile/:id', authenticateToken, async (req, res) => {
 });
 
 // --- BOOK ENDPOINTS ---
-
 app.get('/api/books', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM books WHERE quantity > 0 ORDER BY id DESC');
@@ -123,7 +141,6 @@ app.put('/api/books/:id', authenticateToken, async (req, res) => {
 });
 
 // --- TRANSACTION ENDPOINTS ---
-
 app.post('/api/transactions/rent', authenticateToken, async (req, res) => {
     const { book_id, days_rented, total_price } = req.body;
     const user_id = req.user.id;
@@ -150,6 +167,9 @@ app.post('/api/transactions/buy', authenticateToken, async (req, res) => {
     const user_id = req.user.id;
     try {
         await pool.query('BEGIN');
+        const bookRes = await pool.query('SELECT quantity FROM books WHERE id=$1', [book_id]);
+        if (bookRes.rows[0].quantity <= 0) throw new Error('Out of stock');
+
         const result = await pool.query(
             'INSERT INTO transactions (user_id, book_id, transaction_type, total_price) VALUES ($1, $2, \'buy\', $3) RETURNING *',
             [user_id, book_id, total_price]
@@ -173,9 +193,7 @@ app.post('/api/transactions/return/:transactionId', authenticateToken, async (re
         if (trans.rows.length === 0) throw new Error('Transaction not found');
         
         const bookId = trans.rows[0].book_id;
-        // Increase quantity
         await pool.query('UPDATE books SET quantity = quantity + 1 WHERE id = $1', [bookId]);
-        // Delete transaction or mark as returned (deleting for simplicity in this project)
         await pool.query('DELETE FROM transactions WHERE id = $1', [transactionId]);
         
         await pool.query('COMMIT');
