@@ -217,7 +217,7 @@ app.get('/api/reminders/:userId', authenticateToken, async (req, res) => {
             `SELECT t.*, b.name as book_name, 
             (t.transaction_date + (t.days_rented || ' days')::interval) as due_date,
             EXTRACT(DAY FROM (t.transaction_date + (t.days_rented || ' days')::interval) - CURRENT_TIMESTAMP) as days_left
-            FROM transactions t 
+            FROM transactions t/ 
             JOIN books b ON t.book_id = b.id 
             WHERE t.user_id = $1 AND t.transaction_type = 'rent'
             ORDER BY due_date ASC`,
@@ -230,4 +230,4 @@ app.get('/api/reminders/:userId', authenticateToken, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));  
